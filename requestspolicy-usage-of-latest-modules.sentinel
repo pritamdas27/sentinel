@@ -1,0 +1,77 @@
+##### Imports #####
+import "tfconfig/v2" as tfconfig
+import "http"
+import "strings"
+import "json"
+
+##### Parameters #####
+param address
+param organization
+param token
+
+##### Functions #####
+
+# Retrieve modules from TFE registry and return their latest versions
+retrieve_latest_module_versions = func(address, organization, token) {
+	req = http.request("https://" + address + "/api/registry/v1/modules/" + organization)
+	req = req.with_header("Authorization", "Bearer " + token)
+
+	res = json.unmarshal(http.get(req).body)
+
+	modules = {}
+
+	# Build map: namespace/name/provider → latest version
+	for res.modules as m {
+		index = m.namespace + "/" + m.name + "/" + m.provider
+		modules[index] = m.version
+	}
+
+	return modules
+}
+
+# Validate that all modules from TFE registry use the latest version
+validate_modules = func(address, organization, token) {
+	validated = true
+	discovered_modules = retrieve_latest_module_versions(address, organization, token)
+
+	# Iterate over module_calls
+	for tfconfig.module_calls as name, mc {
+		src = (mc.source else "")
+		ver = (mc.version_constraint else null)
+
+		# Check if "/modules/" exists in src using `in`
+		if "/modules/" in src {
+			# Normalize key: strip everything before "/modules"
+			key = "modules/" + strings.split(src, "/modules/")[1]
+
+			# Get latest version from registry map
+			latest = (discovered_modules[key] else null)
+
+			# Compare only if latest exists
+			if latest is not null {
+				if ver is not null and ver != latest {
+					print("❌ Module", src, "used in module", name,
+						"has version", ver, "but latest is", latest)
+					validated = false
+				}
+			}
+		}
+	}
+
+	return validated
+}
+
+##### Rules #####
+modules_validated = validate_modules(address, organization, token)
+
+# Check if latest available version of modules is being used
+main = rule {
+	modules_validated
+}
+
+##### Output #####
+if main {
+	print("✅ Policy check passed: All modules use the latest version.")
+} else {
+	print("❌ Policy check failed: Some modules are not using the latest version.")
+}
